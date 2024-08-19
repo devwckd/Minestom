@@ -1,11 +1,13 @@
 package net.minestom.server.listener;
 
 import net.kyori.adventure.nbt.CompoundBinaryTag;
+import net.minestom.server.MinecraftServer;
 import net.minestom.server.coordinate.BlockVec;
 import net.minestom.server.coordinate.Point;
 import net.minestom.server.coordinate.Pos;
 import net.minestom.server.entity.GameMode;
 import net.minestom.server.entity.Player;
+import net.minestom.server.entity.attribute.Attribute;
 import net.minestom.server.entity.metadata.LivingEntityMeta;
 import net.minestom.server.event.EventDispatcher;
 import net.minestom.server.event.item.ItemUpdateStateEvent;
@@ -20,6 +22,7 @@ import net.minestom.server.inventory.PlayerInventory;
 import net.minestom.server.item.ItemComponent;
 import net.minestom.server.item.ItemStack;
 import net.minestom.server.item.component.BlockPredicates;
+import net.minestom.server.item.component.Tool;
 import net.minestom.server.network.packet.client.play.ClientPlayerDiggingPacket;
 import net.minestom.server.network.packet.server.play.AcknowledgeBlockChangePacket;
 import net.minestom.server.network.packet.server.play.BlockEntityDataPacket;
@@ -82,7 +85,8 @@ public final class PlayerDiggingListener {
 
         // Survival digging
         // FIXME: verify mineable tag and enchantment
-        final boolean instantBreak = player.isInstantBreak() || block.registry().hardness() == 0;
+
+        final boolean instantBreak = player.isInstantBreak() || block.registry().hardness() == 0 || isInstantBreak(player, block);
         if (!instantBreak) {
             PlayerStartDiggingEvent playerStartDiggingEvent = new PlayerStartDiggingEvent(player, block, new BlockVec(blockPosition), blockFace);
             EventDispatcher.call(playerStartDiggingEvent);
@@ -196,6 +200,62 @@ public final class PlayerDiggingListener {
         } else {
             playerInventory.update();
         }
+    }
+
+
+    private static boolean isInstantBreak(Player player, Block block) {
+        final var hardness = block.registry().hardness();
+        if (hardness == -1.0) {
+            return false;
+        }
+
+        final var itemInHand = player.getItemInMainHand();
+
+        final var tool = itemInHand.get(ItemComponent.TOOL);
+        if (tool == null) {
+            return false;
+        }
+
+        final double rightToolMultiplier = isCorrectForDrops(tool, block) ? 100.0 : 30.0;
+        return getDestroySpeed(player, tool, block) / hardness / rightToolMultiplier > 1.0;
+    }
+
+    private static boolean isCorrectForDrops(Tool tool, Block block) {
+        for (Tool.Rule rule : tool.rules()) {
+            if (Boolean.TRUE.equals(rule.correctForDrops()) && rule.blocks().test(block)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static double getDestroySpeed(Player player, Tool tool, Block block) {
+        double toolMineSpeed = tool.defaultMiningSpeed();
+        for (Tool.Rule rule : tool.rules()) {
+            if (rule.speed() != null && rule.blocks().test(block)) {
+                toolMineSpeed = rule.speed();
+                break;
+            }
+        }
+
+        var f = toolMineSpeed;
+
+        if (f > 1.0) {
+            f += player.getAttributeValue(Attribute.PLAYER_MINING_EFFICIENCY);
+        }
+
+        // TODO account for haste and fatigue
+
+        f *= player.getAttributeValue(Attribute.PLAYER_BLOCK_BREAK_SPEED);
+
+        // TODO maybe account for water mining
+
+        if (!player.isOnGround()) {
+            f /= 5.0;
+        }
+
+        return f;
     }
 
     private record DiggingResult(Block block, boolean success) {
